@@ -14,10 +14,7 @@
 #include "../minecraft/AppPlatform.h"
 #include "../minecraft/ImagePickingCallback.h"
 #include "../minecraft/MultiplayerService.h"
-
-#ifdef __APPLE__
-#include "../minecraft/function.h"
-#endif
+#include "../minecraft/std/function.h"
 
 class ImageData;
 class ImagePickingCallback;
@@ -53,11 +50,7 @@ public:
 
     std::string assetsDir, dataDir;
 
-#ifdef __APPLE__
     std::vector<mcpe::function<void ()>> runOnMainThreadQueue;
-#else
-    std::vector<std::function<void ()>> runOnMainThreadQueue;
-#endif
 
     std::mutex runOnMainThreadMutex;
 
@@ -158,6 +151,9 @@ public:
             return "pocket";
         return "win10";
     }
+    int getBuildPlatform() const {
+        return 7; // Win10
+    }
     int getPlatformUIScalingRules() {
         return enablePocketGuis ? 2 : 0;
     }
@@ -191,11 +187,7 @@ public:
         return true;
     }
 
-#ifdef __APPLE__
     void queueForMainThread(mcpe::function<void ()> f) {
-#else
-    void queueForMainThread(std::function<void ()> f) {
-#endif
         runOnMainThreadMutex.lock();
         runOnMainThreadQueue.push_back(f);
         runOnMainThreadMutex.unlock();

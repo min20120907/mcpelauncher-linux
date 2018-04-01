@@ -2,6 +2,9 @@
 #include "../common/base64.h"
 #include "../common/path_helper.h"
 #include "../common/log.h"
+#ifdef CEF_ENABLED
+#include "../ui/browser/xbox_login_browser.h"
+#endif
 
 #include <fstream>
 
@@ -22,7 +25,8 @@ void XboxLiveHelper::shutdown() {
     cll.reset();
 }
 
-void XboxLiveHelper::invokeXbLogin(xbox::services::system::user_auth_android* auth, std::string const& binaryToken) {
+void XboxLiveHelper::invokeXbLogin(xbox::services::system::user_auth_android* auth, std::string const& binaryToken,
+                                   std::string const& cid) {
     using namespace xbox::services::system;
     auto auth_mgr = xbox::services::system::auth_manager::get_auth_manager_instance();
     auth_mgr->set_rps_ticket(binaryToken);
@@ -42,13 +46,29 @@ void XboxLiveHelper::invokeXbLogin(xbox::services::system::user_auth_android* au
     Log::debug("XboxLiveHelper", "User info received! Status: %i", ret.code);
     Log::debug("XboxLiveHelper", "Gamertag = %s, age group = %s, web account id = %s\n", ret.data.gamertag.c_str(), ret.data.age_group.c_str(), ret.data.web_account_id.c_str());
 
-    auth->auth_flow->auth_flow_result.xbox_user_id = ret.data.xbox_user_id;
-    auth->auth_flow->auth_flow_result.gamertag = ret.data.gamertag;
-    auth->auth_flow->auth_flow_result.age_group = ret.data.age_group;
-    auth->auth_flow->auth_flow_result.privileges = ret.data.privileges;
-    auth->auth_flow->auth_flow_result.user_settings_restrictions = ret.data.user_settings_restrictions;
-    auth->auth_flow->auth_flow_result.user_enforcement_restrictions = ret.data.user_enforcement_restrictions;
-    auth->auth_flow->auth_flow_result.user_title_restrictions = ret.data.user_title_restrictions;
+    auth->auth_flow_result.xbox_user_id = ret.data.xbox_user_id;
+    auth->auth_flow_result.gamertag = ret.data.gamertag;
+    auth->auth_flow_result.age_group = ret.data.age_group;
+    auth->auth_flow_result.privileges = ret.data.privileges;
+    auth->auth_flow_result.user_settings_restrictions = ret.data.user_settings_restrictions;
+    auth->auth_flow_result.user_enforcement_restrictions = ret.data.user_enforcement_restrictions;
+    auth->auth_flow_result.user_title_restrictions = ret.data.user_title_restrictions;
+    auth->auth_flow_result.cid = cid;
+}
+
+void XboxLiveHelper::openLoginBrowser(xbox::services::system::user_auth_android* auth) {
+#ifdef CEF_ENABLED
+    auto result = XboxLoginBrowserClient::OpenBrowser();
+    if (result.success) {
+        XboxLiveHelper::invokeXbLogin(auth, result.binaryToken, result.cid);
+        auth->auth_flow_result.code = 0;
+        auth->auth_flow_result.cid = result.cid;
+        auth->auth_flow_event.set(auth->auth_flow_result);
+    } else {
+        auth->auth_flow_result.code = 2;
+        auth->auth_flow_event.set(auth->auth_flow_result);
+    }
+#endif
 }
 
 std::map<std::string, std::string> SimpleMSAStorageManager::readProperties(std::istream& stream) {

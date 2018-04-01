@@ -34,6 +34,7 @@
 #include "../minecraft/MultiplayerService.h"
 #include "appplatform.h"
 #include "store.h"
+#include "fake_jni.h"
 #ifndef __APPLE__
 #include "gamepad.h"
 #include "../common/openssl_multithread.h"
@@ -41,17 +42,17 @@
 #include "../common/common.h"
 #include "../common/hook.h"
 #include "../common/modloader.h"
-#include "../xbox/xboxlive.h"
+#include "xboxlive.h"
 #include "../common/extract.h"
 #ifndef DISABLE_CEF
-#include "../common/browser.h"
-#include "../xbox/xbox_login_browser.h"
-#include "initial_setup_browser.h"
-#include "gamepad_mapper_browser.h"
+#include "../ui/browser/browser.h"
+#include "../ui/browser/xbox_login_browser.h"
+#include "../ui/browser/initial_setup_browser.h"
+#include "../ui/browser/gamepad_mapper_browser.h"
 #include "../common/path_helper.h"
 #endif
 #ifndef DISABLE_PLAYAPI
-#include "google_login_browser.h"
+#include "../ui/browser/google_login_browser.h"
 #endif
 #ifdef USE_EGLUT
 #include <EGL/egl.h>
@@ -59,11 +60,11 @@
 extern "C" {
 #include <eglut.h>
 }
-#include "window_eglut.h"
+#include "../ui/game_window/window_eglut.h"
 #endif
 #ifdef USE_GLFW
 #include <GLFW/glfw3.h>
-#include "window_glfw.h"
+#include "../ui/game_window/window_glfw.h"
 #endif
 
 extern "C" {
@@ -120,13 +121,6 @@ void abortLinuxHttpRequestInternal(LinuxHttpRequestInternal* requestInternal) {
 static MinecraftGame* client;
 static LinuxAppPlatform* platform;
 
-void detachFromJavaStub() {
-    Log::trace("Launcher", "detach_from_java stub called");
-}
-void* getJVMEnvStub() {
-    Log::trace("Launcher", "get_jvm_env stub called");
-    return nullptr;
-}
 bool verifyCertChainStub() {
     Log::trace("Launcher", "verify_cert_chain_platform_specific stub called");
     return true;
@@ -147,23 +141,37 @@ xbox::services::xbox_live_result<void> xboxLogTelemetrySignin(void* th, bool b, 
     return ret;
 }
 mcpe::string xboxGetLocalStoragePath() {
-    return "data/";
+    return PathHelper::getPrimaryDataDirectory();
 }
-xbox::services::xbox_live_result<void> xboxInitSignInActivity(void*, int requestCode) {
+xbox::services::xbox_live_result<void> xboxInitSignInActivity(xbox::services::system::user_auth_android* th,
+                                                              int requestCode) {
     Log::trace("Launcher", "init_sign_in_activity %i", requestCode);
     xbox::services::xbox_live_result<void> ret;
     ret.code = 0;
     ret.error_code_category = xbox::services::xbox_services_error_code_category();
 
+    auto local_conf = xbox::services::local_config::get_local_config_singleton();
+    th->cid = local_conf->get_value_from_local_storage("cid").std();
+
     if (requestCode == 1) { // silent signin
         auto account = XboxLiveHelper::getMSAStorageManager()->getAccount();
         xbox::services::system::java_rps_ticket ticket;
         if (account) {
-            auto tokens = account->requestTokens({{"user.auth.xboxlive.com", "mbi_ssl"}});
+            std::unordered_map<MSASecurityScope, MSATokenResponse> tokens;
+            try {
+                tokens = account->requestTokens({{"user.auth.xboxlive.com", "mbi_ssl"}});
+            } catch (std::exception& e) {
+                std::cerr << "Xbox Live sign in failed: " << e.what() << "\n";
+                ticket.error_code = 0x800704CF;
+                ret.error_code_category = xbox::services::xbox_services_error_code_category();
+                xbox::services::system::user_auth_android::s_rpsTicketCompletionEvent->set(ticket);
+                return ret;
+            }
             auto xboxLiveToken = tokens[{"user.auth.xboxlive.com"}];
             if (!xboxLiveToken.hasError()) {
                 ticket.token = std::static_pointer_cast<MSACompactToken>(xboxLiveToken.getToken())->getBinaryToken();
                 ticket.error_code = 0;
+                ticket.error_text = "Got ticket";
                 xbox::services::system::user_auth_android::s_rpsTicketCompletionEvent->set(ticket);
                 return ret;
             }
@@ -188,10 +196,10 @@ void xboxInvokeAuthFlow(xbox::services::system::user_auth_android* ret) {
 #ifdef DISABLE_CEF
     std::cerr << "This build does not support Xbox Live login.\n";
     std::cerr << "To log in please build the launcher with CEF support.\n";
-    ret->auth_flow->auth_flow_result.code = 2;
-    ret->auth_flow->auth_flow_event.set(ret->auth_flow->auth_flow_result);
+    ret->auth_flow_result.code = 2;
+    ret->auth_flow_event.set(ret->auth_flow_result);
 #else
-    XboxLoginBrowserClient::OpenBrowser(ret);
+    XboxLiveHelper::openLoginBrowser(ret);
 #endif
 }
 std::vector<mcpe::string> xblGetLocaleList() {
@@ -267,6 +275,14 @@ void pshufb(char* dest, char* src) {
 }
 extern "C"
 void pshufb_xmm4_xmm0();
+
+void destroyXsapiSingleton(void* handle) {
+    unsigned int off = (unsigned int) hybris_dlsym(handle, "_ZN4xbox8services19get_xsapi_singletonEb");
+    unsigned int ebx = off + 0xb;
+    ebx += *((unsigned int*) (off + 0xc + 2));
+    unsigned int ptr = ebx + *((unsigned int*) (off + (0x661 - 0x4F0) + 2));
+    ((std::shared_ptr<xbox::services::xsapi_singleton>*) ptr)->reset();
+}
 
 using namespace std;
 int main(int argc, char *argv[]) {
@@ -457,12 +473,6 @@ int main(int argc, char *argv[]) {
     patchOff = (unsigned int) hybris_dlsym(handle, "_ZN26HTTPRequestInternalAndroid5abortEv");
     patchCallInstruction((void*) patchOff, (void*) &abortLinuxHttpRequestInternal, true);
 
-    patchOff = (unsigned int) hybris_dlsym(handle, "_ZN9crossplat10threadpool16detach_from_javaEPv");
-    patchCallInstruction((void*) patchOff, (void*) &detachFromJavaStub, true);
-
-    patchOff = (unsigned int) hybris_dlsym(handle, "_ZN9crossplat11get_jvm_envEv");
-    patchCallInstruction((void*) patchOff, (void*) &getJVMEnvStub, true);
-
     patchOff = (unsigned int) hybris_dlsym(handle, "_ZN3web4http6client7details35verify_cert_chain_platform_specificERN5boost4asio3ssl14verify_contextERKSs");
     patchCallInstruction((void*) patchOff, (void*) &verifyCertChainStub, true);
 
@@ -571,11 +581,11 @@ int main(int argc, char *argv[]) {
 
     Log::info("Launcher", "Starting game initialization");
 
-    void** ptr = (void**) hybris_dlsym(handle, "_ZN9crossplat3JVME");
-    *ptr = (void*) 1; // this just needs not to be null
+    JavaVM** jvmPtr = (JavaVM**) hybris_dlsym(handle, "_ZN9crossplat3JVME");
+    *jvmPtr = FakeJNI::instance.getVM();
 
     std::shared_ptr<xbox::services::java_interop> javaInterop = xbox::services::java_interop::get_java_interop_singleton();
-    javaInterop->activity = (void*) 1; // this just needs not to be null as well
+    javaInterop->activity = (void*) 1; // this just needs not to be null
 
     Log::trace("Launcher", "Initializing AppPlatform (vtable)");
     LinuxAppPlatform::initVtable(handle);
@@ -608,7 +618,6 @@ int main(int argc, char *argv[]) {
 
     window.setDrawCallback([&window]() {
         if (client->wantToQuit()) {
-            delete client;
             window.close();
             return;
         }
@@ -681,6 +690,13 @@ int main(int argc, char *argv[]) {
     BrowserApp::Shutdown();
 #endif
     XboxLiveHelper::shutdown();
+
+    delete client;
+
+    auto userAndroidInstance = xbox::services::system::user_impl_android::get_instance();
+    if (userAndroidInstance)
+        userAndroidInstance->user_signed_out();
+    destroyXsapiSingleton(handle);
 
     return 0;
 }

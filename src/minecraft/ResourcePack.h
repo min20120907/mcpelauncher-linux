@@ -2,7 +2,9 @@
 
 #include <string>
 #include <functional>
+#include <unordered_map>
 #include "Resource.h"
+#include "UUID.h"
 class MinecraftEventing;
 class IPackTelemetry;
 class FilePathManager;
@@ -14,8 +16,11 @@ enum class ResourcePackStackType;
 class IContentAccessibilityProvider {
     //
 };
+class IContentKeyProvider {
+    //
+};
 
-class SkinPackKeyProvider : public IContentAccessibilityProvider {
+class SkinPackKeyProvider : public IContentAccessibilityProvider, public IContentKeyProvider {
 
 public:
 
@@ -55,6 +60,8 @@ public:
     char filler2[0x100];
 
     ResourcePackRepository(MinecraftEventing&, PackManifestFactory&, IContentAccessibilityProvider&, FilePathManager*, PackSourceFactory&);
+
+    void addWorldResourcePacks(mcpe::string const&);
 
 };
 
